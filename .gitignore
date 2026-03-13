@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+package-lock.json
+
+# Environment files
+.env
+.env.*
+!.env.example
+apps/*/.env
+packages/*/.env
+
+# Build output and caches
+.turbo/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+packages/db/src/*.js
+packages/db/src/*.d.ts
+packages/db/lib/*.js
+packages/db/lib/*.d.ts
+packages/db/prisma.config.js
+packages/db/prisma.config.d.ts
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
