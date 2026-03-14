@@ -4,7 +4,7 @@ import * as z from "zod";
 import { nanoid } from "nanoid";
 import "dotenv/config";
 import extractTargetFields from "../utils/extractTargetFieldsPrisma";
-import { PORT } from "../server";
+import { BASE_URL, PORT } from "../utils/constant";
 
 // zod schema
 const ShortenURLInputSchema = z.object({
@@ -12,8 +12,6 @@ const ShortenURLInputSchema = z.object({
     message: "Must be a secure URL (https)",
   }),
 });
-
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
 export const shortenUrlController = async (req: Request, res: Response) => {
   // zod validation first
@@ -59,26 +57,22 @@ export const shortenUrlController = async (req: Request, res: Response) => {
         if (e.code === "P2002") {
           // console.log(JSON.stringify(e, null, 2));
 
-          const targetFields = extractTargetFields(e);
-
-          // original url already present in db
-          if (targetFields?.includes("originalUrl")) {
-            // get back that slug and return
-            const foundShortenUrl = await prisma.shortenUrl.findUnique({
+          // first check for original url duplication
+          const foundShortenUrlWithSameOriginalUrl =
+            await prisma.shortenUrl.findUnique({
               where: {
                 originalUrl: validatedInputBody.originalUrl,
               },
             });
 
+          if (foundShortenUrlWithSameOriginalUrl) {
             return res.status(200).json({
-              shortenUrl: `${BASE_URL}/${foundShortenUrl?.slug}`,
+              shortenUrl: `${BASE_URL}/${foundShortenUrlWithSameOriginalUrl.slug}`,
             });
           }
 
-          // slug collision
-          if (targetFields?.includes("slug")) {
-            continue;
-          }
+          // else -> slug duplication error occurs
+          continue;
         }
 
         // other prisma error

@@ -1,9 +1,7 @@
 import express from "express";
-import "dotenv/config";
+import { PORT } from "./utils/constant";
 import urlRouter from "./routes/url.routes";
 import { redirectUrlController } from "./controllers/url.controller";
-
-export const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(express.json());
@@ -22,5 +20,7 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("Server is running");
+  console.log("Server is running on port", PORT);
 });
+
+// export { PORT };
