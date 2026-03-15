@@ -3,7 +3,6 @@ import { Prisma, prisma } from "@repo/db";
 import * as z from "zod";
 import { nanoid } from "nanoid";
 import "dotenv/config";
-import extractTargetFields from "../utils/extractTargetFieldsPrisma";
 import { BASE_URL, PORT } from "../utils/constant";
 
 // zod schema
