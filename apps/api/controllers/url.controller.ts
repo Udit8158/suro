@@ -13,6 +13,7 @@ const ShortenURLInputSchema = z.object({
   }),
 });
 
+// data shape for response data - this will be different for each controller
 type ShapeOfData = {
   shortenUrl: string;
 };
