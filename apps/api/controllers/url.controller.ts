@@ -4,6 +4,7 @@ import * as z from "zod";
 import { nanoid } from "nanoid";
 import "dotenv/config";
 import { BASE_URL, PORT } from "../utils/constant";
+import { responseHandler } from "../utils/responseHandler";
 
 // zod schema
 const ShortenURLInputSchema = z.object({
@@ -11,6 +12,10 @@ const ShortenURLInputSchema = z.object({
     message: "Must be a secure URL (https)",
   }),
 });
+
+type ShapeOfData = {
+  shortenUrl: string;
+};
 
 export const shortenUrlController = async (req: Request, res: Response) => {
   // zod validation first
@@ -21,13 +26,22 @@ export const shortenUrlController = async (req: Request, res: Response) => {
   } catch (e) {
     // zod validation error
     if (e instanceof z.ZodError) {
-      return res.status(400).json({
-        error: e.issues,
+      return responseHandler({
+        statusCode: 400,
+        success: false,
+        error: "Zod error - failed to validate input body scheam",
+        data: null,
+        res,
+        errorDetails: e.issues,
       });
     }
-    return res
-      .status(500)
-      .json({ error: "Invalid request processing failed (at zod valiation)" });
+    return responseHandler<ShapeOfData>({
+      statusCode: 500,
+      success: false,
+      error: "Invalid request processing failed (at zod validation)",
+      data: null,
+      res,
+    });
   }
 
   for (let i = 1; i <= 3; i++) {
@@ -46,8 +60,15 @@ export const shortenUrlController = async (req: Request, res: Response) => {
         },
       });
 
-      return res.status(201).json({
+      const resData = {
         shortenUrl: `${BASE_URL}/${slug}`,
+      };
+      return responseHandler<ShapeOfData>({
+        statusCode: 201,
+        success: true,
+        error: null,
+        data: resData,
+        res,
       });
     } catch (e) {
       // prisma errors
@@ -65,8 +86,15 @@ export const shortenUrlController = async (req: Request, res: Response) => {
             });
 
           if (foundShortenUrlWithSameOriginalUrl) {
-            return res.status(200).json({
+            const resData = {
               shortenUrl: `${BASE_URL}/${foundShortenUrlWithSameOriginalUrl.slug}`,
+            };
+            return responseHandler<ShapeOfData>({
+              statusCode: 200,
+              success: true,
+              error: null,
+              data: resData,
+              res,
             });
           }
 
@@ -76,22 +104,35 @@ export const shortenUrlController = async (req: Request, res: Response) => {
 
         // other prisma error
         console.log(e);
-        return res.status(500).json({
+
+        return responseHandler<ShapeOfData>({
+          statusCode: 500,
+          success: false,
           error: "Some prisma error occured",
+          data: null,
+          res,
         });
       }
 
       // other normal error
       console.log(e);
-      return res.status(500).json({
+      return responseHandler<ShapeOfData>({
+        statusCode: 500,
+        success: false,
         error: "Something wrong happened",
+        data: null,
+        res,
       });
     }
   }
 
   // after loop -> means times
-  return res.status(503).json({
+  return responseHandler<ShapeOfData>({
+    statusCode: 500,
+    success: false,
     error: "Timeout - due to slug collision",
+    data: null,
+    res,
   });
 };
 
@@ -111,9 +152,16 @@ export const redirectUrlController = async (
 
     // if not existed -> 404
     if (!existingShortenUrl) {
-      return res.status(404).json({
-        error: "No such url exists",
+      return responseHandler<ShapeOfData>({
+        statusCode: 404,
+        success: false,
+        error: "No such url exist",
+        data: null,
+        res,
       });
+      // return res.status(404).json({
+      //   error: "No such url exists",
+      // });
     }
     // if existed -> redirect
     else {
@@ -124,6 +172,13 @@ export const redirectUrlController = async (
     }
   } catch (error) {
     console.log(error);
-    res.status(500).json({ error: "Something went wrong" });
+    return responseHandler<ShapeOfData>({
+      statusCode: 500,
+      success: false,
+      error: "Someting went wrong",
+      data: null,
+      res,
+    });
+    // res.status(500).json({ error: "Something went wrong" });
   }
 };
