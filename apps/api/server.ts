@@ -16,7 +16,7 @@ app.use("/:slug", redirectUrlController);
 
 // 404 handler for undefined routes (place before the error handler)
 app.use((req, res) => {
-  res.status(404).json("Sorry, can't find that!");
+  res.status(404).json("Sorry, can't find any route like this! Check docs.");
 });
 
 app.listen(PORT, () => {

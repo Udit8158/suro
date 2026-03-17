@@ -5,6 +5,11 @@ import { nanoid } from "nanoid";
 import "dotenv/config";
 import { BASE_URL } from "../utils/constant";
 import { responseHandler } from "../utils/responseHandler";
+import { CacheShape } from "../types/types";
+import { removeLeastUsedCache } from "../utils/removeLeastUsedCache";
+
+// in memory cache
+export let shortenUrlCache: CacheShape[] = [];
 
 // zod schema
 const ShortenURLInputSchema = z.object({
@@ -141,45 +146,79 @@ export const redirectUrlController = async (
   req: Request<{ slug: string }>,
   res: Response,
 ) => {
+  // console.log("Current state of cache ", shortenUrlCache);
+
+  // shortenUrlCache.sort((a, b) => b.usedIn - a.usedIn);
+  // console.log("sorted, ", shortenUrlCache);
+  // for calculating latency
+  let starTime = Date.now();
+
   try {
     const { slug } = req.params;
 
-    // find the slug in db
+    // finding slug in cache first
+    const foundItemInCache = shortenUrlCache.find((v) => v.slug === slug);
+
+    // if found in cache - no db call -> redirect
+    if (foundItemInCache) {
+      // console.log("using cache");
+      foundItemInCache.usedIn++; // using this cache
+      res.setHeader("Location", foundItemInCache.originalUrl);
+      console.log("Latency when using cache ", Date.now() - starTime);
+      res.redirect(foundItemInCache.originalUrl);
+      return;
+    }
+
+    // else find the slug in db
+    console.log("trying for db");
     const existingShortenUrl = await prisma.shortenUrl.findFirst({
       where: {
         slug,
       },
     });
 
-    // if not existed -> 404
+    // if not found in db -> 404 (that means no such slug in db, you have to shorten the url first )
     if (!existingShortenUrl) {
       return responseHandler<ShapeOfData>({
         statusCode: 404,
         success: false,
-        error: "No such url exist",
+        error:
+          "No such url exist, you have to first shorten the url, check docs for that",
         data: null,
         res,
       });
-      // return res.status(404).json({
-      //   error: "No such url exists",
-      // });
     }
-    // if existed -> redirect
+
+    // if slug existed in db -> redirect and store it in cache for future use
     else {
       const originalUrl = existingShortenUrl.originalUrl;
       res.setHeader("Location", originalUrl);
-
+      console.log("When using DB ", Date.now() - starTime);
       res.redirect(originalUrl);
+
+      // before storing the url in cache
+      // remove an element based on size of cache and (least used one) (maintaining the cache)
+      if (shortenUrlCache.length >= 100) {
+        // we will delete the least used cache
+        removeLeastUsedCache(shortenUrlCache);
+      }
+      // now add the url in cache for later use
+      shortenUrlCache.push({
+        slug: existingShortenUrl.slug,
+        originalUrl: existingShortenUrl.originalUrl,
+        usedIn: 0, // it has not used yet from cache so 0
+      });
     }
   } catch (error) {
+    // if something wrong happened while db call and all
     console.log(error);
     return responseHandler<ShapeOfData>({
       statusCode: 500,
       success: false,
       error: "Someting went wrong",
+      errorDetails: error,
       data: null,
       res,
     });
-    // res.status(500).json({ error: "Something went wrong" });
   }
 };
