@@ -2,7 +2,6 @@ import { Request, Response } from "express";
 import { Prisma, prisma } from "@repo/db";
 import * as z from "zod";
 import { nanoid } from "nanoid";
-import "dotenv/config";
 import { BASE_URL } from "../utils/constant";
 import { responseHandler } from "../utils/responseHandler";
 import { CacheShape } from "../types/types";
@@ -79,8 +78,10 @@ export const shortenUrlController = async (req: Request, res: Response) => {
     } catch (e) {
       // prisma errors
       if (e instanceof Prisma.PrismaClientKnownRequestError) {
+        const prismaError = e as Prisma.PrismaClientKnownRequestError;
+
         // prisma unique constraint errors
-        if (e.code === "P2002") {
+        if (prismaError.code === "P2002") {
           // console.log(JSON.stringify(e, null, 2));
 
           // first check for original url duplication
