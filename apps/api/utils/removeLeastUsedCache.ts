@@ -1,14 +1,20 @@
 import type { CacheShape } from "../types/types";
 
 // This is will remove the least used cached url
-export function removeLeastUsedCache(shortenUrlCache: CacheShape[]) {
-  let leastUsedInIndex = 0;
-
-  for (let i = 1; i < shortenUrlCache.length; i++) {
-    if (shortenUrlCache[i].usedIn < shortenUrlCache[leastUsedInIndex].usedIn) {
-      leastUsedInIndex = i;
-    }
+export function removeLeastUsedCache(shortenUrlCache: Map<string, CacheShape>) {
+  if (shortenUrlCache.size === 0) {
+    return;
   }
 
-  shortenUrlCache.splice(leastUsedInIndex, 1);
+  let leastUsedInValue = Infinity;
+  let leastUsedInSlug = "";
+
+  shortenUrlCache.forEach((slugValue, slug) => {
+    if (slugValue.usedIn < leastUsedInValue) {
+      leastUsedInValue = slugValue.usedIn;
+      leastUsedInSlug = slug;
+    }
+  });
+
+  shortenUrlCache.delete(leastUsedInSlug);
 }

@@ -8,7 +8,8 @@ import { CacheShape } from "../types/types";
 import { removeLeastUsedCache } from "../utils/removeLeastUsedCache";
 
 // in memory cache
-export let shortenUrlCache: CacheShape[] = [];
+export let shortenUrlCache: Map<string, CacheShape> = new Map();
+// slug -> {originalUrl: "", usedIn: num}
 
 // zod schema
 const ShortenURLInputSchema = z.object({
@@ -158,7 +159,8 @@ export const redirectUrlController = async (
     const { slug } = req.params;
 
     // finding slug in cache first
-    const foundItemInCache = shortenUrlCache.find((v) => v.slug === slug);
+    // const foundItemInCache = shortenUrlCache.find((v) => v.slug === slug); O(n)
+    const foundItemInCache = shortenUrlCache.get(slug); // O(1)
 
     // if found in cache - no db call -> redirect
     if (foundItemInCache) {
@@ -199,16 +201,15 @@ export const redirectUrlController = async (
 
       // before storing the url in cache
       // remove an element based on size of cache and (least used one) (maintaining the cache)
-      if (shortenUrlCache.length >= 100) {
+      if (shortenUrlCache.size >= 100) {
         // we will delete the least used cache
         removeLeastUsedCache(shortenUrlCache);
       }
       // now add the url in cache for later use
-      shortenUrlCache.push({
-        slug: existingShortenUrl.slug,
+      shortenUrlCache.set(slug, {
         originalUrl: existingShortenUrl.originalUrl,
-        usedIn: 0, // it has not used yet from cache so 0
-      });
+        usedIn: 0,
+      }); // it has not used yet from cache so 0})
     }
   } catch (error) {
     // if something wrong happened while db call and all

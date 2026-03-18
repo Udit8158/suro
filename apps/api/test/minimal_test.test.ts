@@ -27,7 +27,7 @@ const mockedPrisma = vi.mocked(prisma, { deep: true });
 // before each call clearup the db
 beforeEach(() => {
   vi.clearAllMocks();
-  shortenUrlCache.splice(0, shortenUrlCache.length);
+  shortenUrlCache.clear();
 });
 
 // utility func for test
@@ -41,26 +41,19 @@ function createPrismaError(code: string) {
 // utility functions test
 describe("testing removeLeastUsedCache function", () => {
   it("removes the least used url", () => {
-    const input: CacheShape[] = [
-      { originalUrl: "https://example.com", slug: "idh393", usedIn: 3 },
-      { originalUrl: "https://example2.com", slug: "sih393", usedIn: 1 },
-      { originalUrl: "https://example3.com", slug: "rih393", usedIn: 2 },
-    ];
-    const expectedOutPut: CacheShape[] = [
-      {
-        originalUrl: "https://example.com",
-        slug: "idh393",
-        usedIn: 3,
-      },
-      {
-        originalUrl: "https://example3.com",
-        slug: "rih393",
-        usedIn: 2,
-      },
-    ];
+    const testCache: Map<string, CacheShape> = new Map();
+    testCache.set("abc1", { originalUrl: "https://abc1.com", usedIn: 2 });
+    testCache.set("abc2", { originalUrl: "https://abc2.com", usedIn: 3 });
+    testCache.set("abc3", { originalUrl: "https://abc3.com", usedIn: 1 });
 
-    removeLeastUsedCache(input);
-    expect(input).toStrictEqual(expectedOutPut);
+    removeLeastUsedCache(testCache);
+
+    expect(testCache.get("abc3")).toBe(undefined);
+    expect(testCache.get("abc2")).toStrictEqual({
+      originalUrl: "https://abc2.com",
+      usedIn: 3,
+    });
+    expect(testCache.size).toBe(2);
   });
 });
 
@@ -172,19 +165,31 @@ describe("/:slug", () => {
 
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe("https://example.com");
+    expect(shortenUrlCache.get("abc12")).toStrictEqual({
+      originalUrl: "https://example.com",
+      usedIn: 0,
+    });
   });
 
   it("should redirect from cache when slug exists in cache", async () => {
-    shortenUrlCache.push({
-      slug: "cache1",
+    // shortenUrlCache.push({
+    //   slug: "cache1",
+    //   originalUrl: "https://cached-example.com",
+    //   usedIn: 0,
+    // });
+
+    shortenUrlCache.set("cache1", {
       originalUrl: "https://cached-example.com",
       usedIn: 0,
     });
 
     const res = await request(app).get("/cache1").redirects(0);
 
+    expect(mockedPrisma.shortenUrl.findFirst).not.toHaveBeenCalled(); // should not call the db
+    expect(mockedPrisma.shortenUrl.findUnique).not.toHaveBeenCalled(); // should not call the db
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe("https://cached-example.com");
+    expect(shortenUrlCache.get("cache1")?.usedIn).toBe(1); // using the cache for first time
   });
 
   it("should return 500 when db call fails", async () => {
