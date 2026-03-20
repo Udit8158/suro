@@ -2,14 +2,15 @@ import { Request, Response } from "express";
 import { Prisma, prisma } from "@repo/db";
 import * as z from "zod";
 import { nanoid } from "nanoid";
-import { BASE_URL } from "../utils/constant";
+import { BASE_URL, SLUG_CACHE_EXPIRES_IN } from "../utils/constant";
 import { responseHandler } from "../utils/responseHandler";
 import { CacheShape } from "../types/types";
 import { removeLeastUsedCache } from "../utils/removeLeastUsedCache";
+import { expiredSlugCacheCleanUP } from "../utils/expiredSlugCacheCleanUp";
 
 // in memory cache
 export let shortenUrlCache: Map<string, CacheShape> = new Map();
-// slug -> {originalUrl: "", usedIn: num}
+// slug -> {originalUrl: "", usedIn: num, expiresIn: Date}
 
 // zod schema
 const ShortenURLInputSchema = z.object({
@@ -148,28 +149,29 @@ export const redirectUrlController = async (
   req: Request<{ slug: string }>,
   res: Response,
 ) => {
-  // console.log("Current state of cache ", shortenUrlCache);
-
-  // shortenUrlCache.sort((a, b) => b.usedIn - a.usedIn);
-  // console.log("sorted, ", shortenUrlCache);
-  // for calculating latency
   let starTime = Date.now();
 
   try {
     const { slug } = req.params;
 
     // finding slug in cache first
-    // const foundItemInCache = shortenUrlCache.find((v) => v.slug === slug); O(n)
     const foundItemInCache = shortenUrlCache.get(slug); // O(1)
 
     // if found in cache - no db call -> redirect
     if (foundItemInCache) {
       // console.log("using cache");
-      foundItemInCache.usedIn++; // using this cache
-      res.setHeader("Location", foundItemInCache.originalUrl);
-      console.log("Latency when using cache ", Date.now() - starTime);
-      res.redirect(foundItemInCache.originalUrl);
-      return;
+      // check if the cache is expired already
+      if (foundItemInCache.expiresAt <= Date.now()) {
+        // we will not use the cache and delete the cache
+        shortenUrlCache.delete(slug);
+      } else {
+        // using the cache
+        foundItemInCache.usedIn++; // using this cache
+        res.setHeader("Location", foundItemInCache.originalUrl);
+        console.log("Latency when using cache ", Date.now() - starTime);
+        res.redirect(foundItemInCache.originalUrl);
+        return;
+      }
     }
 
     // else find the slug in db
@@ -200,6 +202,8 @@ export const redirectUrlController = async (
       res.redirect(originalUrl);
 
       // before storing the url in cache
+      // cleanup the expired cache
+      expiredSlugCacheCleanUP(shortenUrlCache);
       // remove an element based on size of cache and (least used one) (maintaining the cache)
       if (shortenUrlCache.size >= 100) {
         // we will delete the least used cache
@@ -209,6 +213,7 @@ export const redirectUrlController = async (
       shortenUrlCache.set(slug, {
         originalUrl: existingShortenUrl.originalUrl,
         usedIn: 0,
+        expiresAt: Date.now() + SLUG_CACHE_EXPIRES_IN,
       }); // it has not used yet from cache so 0})
     }
   } catch (error) {

@@ -5,7 +5,8 @@ import request from "supertest";
 import { Prisma, prisma } from "@repo/db";
 import { app } from "../app";
 import { shortenUrlCache } from "../controllers/url.controller";
-import { BASE_URL } from "../utils/constant";
+import { BASE_URL, SLUG_CACHE_EXPIRES_IN } from "../utils/constant";
+import { expiredSlugCacheCleanUP } from "../utils/expiredSlugCacheCleanUp";
 
 // mock db seup
 vi.mock("@repo/db", async () => {
@@ -40,20 +41,70 @@ function createPrismaError(code: string) {
 
 // utility functions test
 describe("testing removeLeastUsedCache function", () => {
-  it("removes the least used url", () => {
-    const testCache: Map<string, CacheShape> = new Map();
-    testCache.set("abc1", { originalUrl: "https://abc1.com", usedIn: 2 });
-    testCache.set("abc2", { originalUrl: "https://abc2.com", usedIn: 3 });
-    testCache.set("abc3", { originalUrl: "https://abc3.com", usedIn: 1 });
+  const timeNow = Date.now();
+  const testCache: Map<string, CacheShape> = new Map();
+  testCache.set("abc1", {
+    originalUrl: "https://abc1.com",
+    usedIn: 2,
+    expiresAt: timeNow + SLUG_CACHE_EXPIRES_IN,
+  });
+  testCache.set("abc2", {
+    originalUrl: "https://abc2.com",
+    usedIn: 3,
+    expiresAt: timeNow + SLUG_CACHE_EXPIRES_IN,
+  });
+  testCache.set("abc3", {
+    originalUrl: "https://abc3.com",
+    usedIn: 1,
+    expiresAt: timeNow + SLUG_CACHE_EXPIRES_IN,
+  });
 
+  it("removes the least used url", () => {
     removeLeastUsedCache(testCache);
 
     expect(testCache.get("abc3")).toBe(undefined);
+
+    expect(testCache.size).toBe(2);
+  });
+  it("shouldn't change any other cache", () => {
     expect(testCache.get("abc2")).toStrictEqual({
       originalUrl: "https://abc2.com",
       usedIn: 3,
+      expiresAt: timeNow + SLUG_CACHE_EXPIRES_IN,
     });
+  });
+});
+
+describe("testing expiredSlugCacheCleanUp function", () => {
+  it("removes the expired cache", () => {
+    const timeNow = Date.now();
+
+    const testCache: Map<string, CacheShape> = new Map();
+    testCache.set("abc1", {
+      originalUrl: "https://abc1.com",
+      usedIn: 2,
+      expiresAt: timeNow + SLUG_CACHE_EXPIRES_IN,
+    });
+    testCache.set("abc2", {
+      originalUrl: "https://abc2.com",
+      usedIn: 3,
+      expiresAt: timeNow + SLUG_CACHE_EXPIRES_IN,
+    });
+    testCache.set("abc3", {
+      originalUrl: "https://abc3.com",
+      usedIn: 1,
+      expiresAt: timeNow - SLUG_CACHE_EXPIRES_IN, // expired
+    });
+
+    expiredSlugCacheCleanUP(testCache);
+
+    expect(testCache.get("abc3")).toBe(undefined); // main one
     expect(testCache.size).toBe(2);
+    expect(testCache.get("abc2")).toStrictEqual({
+      originalUrl: "https://abc2.com",
+      usedIn: 3,
+      expiresAt: timeNow + SLUG_CACHE_EXPIRES_IN,
+    });
   });
 });
 
@@ -154,33 +205,35 @@ describe("/:slug", () => {
     expect(res.headers["content-type"]).toMatch(/json/);
   });
 
-  it("should redirect when slug exists", async () => {
+  it("should redirect when slug exists in db and add that in cache", async () => {
     mockedPrisma.shortenUrl.findFirst.mockResolvedValueOnce({
       id: "1",
       slug: "abc12",
       originalUrl: "https://example.com",
     } as never);
 
+    const beforeRequest = Date.now();
     const res = await request(app).get("/abc12").redirects(0);
+    const afterRequest = Date.now();
+    const cachedUrl = shortenUrlCache.get("abc12");
 
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe("https://example.com");
-    expect(shortenUrlCache.get("abc12")).toStrictEqual({
-      originalUrl: "https://example.com",
-      usedIn: 0,
-    });
+    expect(cachedUrl?.originalUrl).toBe("https://example.com");
+    expect(cachedUrl?.usedIn).toBe(0);
+    expect(cachedUrl?.expiresAt).toBeGreaterThanOrEqual(
+      beforeRequest + SLUG_CACHE_EXPIRES_IN,
+    );
+    expect(cachedUrl?.expiresAt).toBeLessThanOrEqual(
+      afterRequest + SLUG_CACHE_EXPIRES_IN,
+    );
   });
 
   it("should redirect from cache when slug exists in cache", async () => {
-    // shortenUrlCache.push({
-    //   slug: "cache1",
-    //   originalUrl: "https://cached-example.com",
-    //   usedIn: 0,
-    // });
-
     shortenUrlCache.set("cache1", {
       originalUrl: "https://cached-example.com",
       usedIn: 0,
+      expiresAt: Date.now() + SLUG_CACHE_EXPIRES_IN,
     });
 
     const res = await request(app).get("/cache1").redirects(0);
@@ -190,6 +243,36 @@ describe("/:slug", () => {
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe("https://cached-example.com");
     expect(shortenUrlCache.get("cache1")?.usedIn).toBe(1); // using the cache for first time
+  });
+
+  it("should fail to redirect from cache when slug exists in cache but expired", async () => {
+    shortenUrlCache.set("cache-expired", {
+      originalUrl: "https://old-cached-example.com",
+      usedIn: 4,
+      expiresAt: Date.now() - 1000, // already expired
+    });
+
+    mockedPrisma.shortenUrl.findFirst.mockResolvedValueOnce({
+      id: "1",
+      slug: "cache-expired",
+      originalUrl: "https://db-example.com",
+    } as never);
+
+    const res = await request(app).get("/cache-expired").redirects(0);
+
+    expect(mockedPrisma.shortenUrl.findFirst).toHaveBeenCalledTimes(1);
+    expect(mockedPrisma.shortenUrl.findFirst).toHaveBeenCalledWith({
+      where: {
+        slug: "cache-expired",
+      },
+    });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe("https://db-example.com");
+
+    expect(shortenUrlCache.get("cache-expired")?.originalUrl).toBe(
+      "https://db-example.com",
+    );
   });
 
   it("should return 500 when db call fails", async () => {
