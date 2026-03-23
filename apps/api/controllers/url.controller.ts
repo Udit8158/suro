@@ -2,11 +2,13 @@ import { Request, Response } from "express";
 import { Prisma, prisma } from "@repo/db";
 import * as z from "zod";
 import { nanoid } from "nanoid";
-import { BASE_URL, SLUG_CACHE_EXPIRES_IN } from "../utils/constant";
+import { BASE_URL } from "../utils/constant";
 import { responseHandler } from "../utils/responseHandler";
 import { CacheShape } from "../types/types";
-import { removeLeastUsedCache } from "../utils/removeLeastUsedCache";
-import { expiredSlugCacheCleanUP } from "../utils/expiredSlugCacheCleanUp";
+import {
+  foundItemInCacheAndTryToUse,
+  writeSlugIntoCache,
+} from "../utils/redirectController.helper";
 
 // in memory cache
 export let shortenUrlCache: Map<string, CacheShape> = new Map();
@@ -149,34 +151,21 @@ export const redirectUrlController = async (
   req: Request<{ slug: string }>,
   res: Response,
 ) => {
-  let starTime = Date.now();
+  const startTime = Date.now();
 
   try {
     const { slug } = req.params;
 
-    // finding slug in cache first
-    const foundItemInCache = shortenUrlCache.get(slug); // O(1)
-
-    // if found in cache - no db call -> redirect
-    if (foundItemInCache) {
-      // console.log("using cache");
-      // check if the cache is expired already
-      if (foundItemInCache.expiresAt <= Date.now()) {
-        // we will not use the cache and delete the cache
-        shortenUrlCache.delete(slug);
-      } else {
-        // using the cache
-        foundItemInCache.usedIn++; // using this cache
-        res.setHeader("Location", foundItemInCache.originalUrl);
-        console.log("Latency when using cache ", Date.now() - starTime);
-        res.redirect(foundItemInCache.originalUrl);
-        return;
-      }
+    const cacheLookup = foundItemInCacheAndTryToUse(shortenUrlCache, slug);
+    if (cacheLookup.cacheUsed) {
+      res.setHeader("Location", cacheLookup.foundItemInCache.originalUrl);
+      console.log("Latency when using cache ", Date.now() - startTime);
+      res.redirect(cacheLookup.foundItemInCache.originalUrl);
+      return;
     }
 
-    // else find the slug in db
     console.log("trying for db");
-    const existingShortenUrl = await prisma.shortenUrl.findFirst({
+    const existingShortenUrl = await prisma.shortenUrl.findUnique({
       where: {
         slug,
       },
@@ -194,28 +183,12 @@ export const redirectUrlController = async (
       });
     }
 
-    // if slug existed in db -> redirect and store it in cache for future use
-    else {
-      const originalUrl = existingShortenUrl.originalUrl;
-      res.setHeader("Location", originalUrl);
-      console.log("When using DB ", Date.now() - starTime);
-      res.redirect(originalUrl);
-
-      // before storing the url in cache
-      // cleanup the expired cache
-      expiredSlugCacheCleanUP(shortenUrlCache);
-      // remove an element based on size of cache and (least used one) (maintaining the cache)
-      if (shortenUrlCache.size >= 100) {
-        // we will delete the least used cache
-        removeLeastUsedCache(shortenUrlCache);
-      }
-      // now add the url in cache for later use
-      shortenUrlCache.set(slug, {
-        originalUrl: existingShortenUrl.originalUrl,
-        usedIn: 0,
-        expiresAt: Date.now() + SLUG_CACHE_EXPIRES_IN,
-      }); // it has not used yet from cache so 0})
-    }
+    // when we got the slug in db
+    const originalUrl = existingShortenUrl.originalUrl;
+    writeSlugIntoCache(shortenUrlCache, slug, originalUrl);
+    res.setHeader("Location", originalUrl);
+    console.log("When using DB ", Date.now() - startTime);
+    res.redirect(originalUrl);
   } catch (error) {
     // if something wrong happened while db call and all
     console.log(error);

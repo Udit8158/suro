@@ -196,7 +196,7 @@ describe("/api/url/shorten", () => {
 
 describe("/:slug", () => {
   it("should return 404 when slug does not exist", async () => {
-    mockedPrisma.shortenUrl.findFirst.mockResolvedValueOnce(null);
+    mockedPrisma.shortenUrl.findUnique.mockResolvedValueOnce(null);
 
     const res = await request(app).get("/missing-slug");
 
@@ -206,7 +206,7 @@ describe("/:slug", () => {
   });
 
   it("should redirect when slug exists in db and add that in cache", async () => {
-    mockedPrisma.shortenUrl.findFirst.mockResolvedValueOnce({
+    mockedPrisma.shortenUrl.findUnique.mockResolvedValueOnce({
       id: "1",
       slug: "abc12",
       originalUrl: "https://example.com",
@@ -252,7 +252,7 @@ describe("/:slug", () => {
       expiresAt: Date.now() - 1000, // already expired
     });
 
-    mockedPrisma.shortenUrl.findFirst.mockResolvedValueOnce({
+    mockedPrisma.shortenUrl.findUnique.mockResolvedValueOnce({
       id: "1",
       slug: "cache-expired",
       originalUrl: "https://db-example.com",
@@ -260,8 +260,8 @@ describe("/:slug", () => {
 
     const res = await request(app).get("/cache-expired").redirects(0);
 
-    expect(mockedPrisma.shortenUrl.findFirst).toHaveBeenCalledTimes(1);
-    expect(mockedPrisma.shortenUrl.findFirst).toHaveBeenCalledWith({
+    expect(mockedPrisma.shortenUrl.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockedPrisma.shortenUrl.findUnique).toHaveBeenCalledWith({
       where: {
         slug: "cache-expired",
       },
@@ -276,7 +276,7 @@ describe("/:slug", () => {
   });
 
   it("should return 500 when db call fails", async () => {
-    mockedPrisma.shortenUrl.findFirst.mockRejectedValueOnce(
+    mockedPrisma.shortenUrl.findUnique.mockRejectedValueOnce(
       new Error("boom TEST ERROR"),
     );
 
