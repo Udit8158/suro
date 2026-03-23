@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
 import { Prisma, prisma } from "@repo/db";
 import * as z from "zod";
-import { nanoid } from "nanoid";
 import { BASE_URL } from "../utils/constant";
 import { responseHandler } from "../utils/responseHandler";
 import { CacheShape } from "../types/types";
@@ -9,6 +8,7 @@ import {
   foundItemInCacheAndTryToUse,
   writeSlugIntoCache,
 } from "../utils/redirectController.helper";
+import { createShortenUrlWithRetries } from "../utils/shortenUrlController.helper";
 
 // in memory cache
 export let shortenUrlCache: Map<string, CacheShape> = new Map();
@@ -53,98 +53,56 @@ export const shortenUrlController = async (req: Request, res: Response) => {
     });
   }
 
-  for (let i = 1; i <= 3; i++) {
-    // console.log("loop on");
+  try {
+    const createShortenUrlResult = await createShortenUrlWithRetries(
+      validatedInputBody.originalUrl,
+    );
 
-    try {
-      // create slug
-      const slug = nanoid(5);
-      // const slug = "abc123";
-
-      // create in db
-      await prisma.shortenUrl.create({
-        data: {
-          slug,
-          originalUrl: validatedInputBody.originalUrl,
-        },
-      });
-
-      const resData = {
-        shortenUrl: `${BASE_URL}/${slug}`,
-      };
-      return responseHandler<ShapeOfData>({
-        statusCode: 201,
-        success: true,
-        error: null,
-        data: resData,
-        res,
-      });
-    } catch (e) {
-      // prisma errors
-      if (e instanceof Prisma.PrismaClientKnownRequestError) {
-        const prismaError = e as Prisma.PrismaClientKnownRequestError;
-
-        // prisma unique constraint errors
-        if (prismaError.code === "P2002") {
-          // console.log(JSON.stringify(e, null, 2));
-
-          // first check for original url duplication
-          const foundShortenUrlWithSameOriginalUrl =
-            await prisma.shortenUrl.findUnique({
-              where: {
-                originalUrl: validatedInputBody.originalUrl,
-              },
-            });
-
-          if (foundShortenUrlWithSameOriginalUrl) {
-            const resData = {
-              shortenUrl: `${BASE_URL}/${foundShortenUrlWithSameOriginalUrl.slug}`,
-            };
-            return responseHandler<ShapeOfData>({
-              statusCode: 200,
-              success: true,
-              error: null,
-              data: resData,
-              res,
-            });
-          }
-
-          // else -> slug duplication error occurs
-          continue;
-        }
-
-        // other prisma error
-        console.log(e);
-
-        return responseHandler<ShapeOfData>({
-          statusCode: 500,
-          success: false,
-          error: "Some prisma error occured",
-          data: null,
-          res,
-        });
-      }
-
-      // other normal error
-      console.log(e);
+    if (createShortenUrlResult.kind === "retry_exhausted") {
       return responseHandler<ShapeOfData>({
         statusCode: 500,
         success: false,
-        error: "Something wrong happened",
+        error: "Timeout - due to slug collision",
         data: null,
         res,
       });
     }
-  }
 
-  // after loop -> means times
-  return responseHandler<ShapeOfData>({
-    statusCode: 500,
-    success: false,
-    error: "Timeout - due to slug collision",
-    data: null,
-    res,
-  });
+    const resData = {
+      shortenUrl: `${BASE_URL}/${createShortenUrlResult.slug}`,
+    };
+
+    return responseHandler<ShapeOfData>({
+      statusCode: createShortenUrlResult.kind === "created" ? 201 : 200,
+      success: true,
+      error: null,
+      data: resData,
+      res,
+    });
+  } catch (e) {
+    // prisma errors
+    if (e instanceof Prisma.PrismaClientKnownRequestError) {
+      console.log(e);
+
+      return responseHandler<ShapeOfData>({
+        statusCode: 500,
+        success: false,
+        error: "Some prisma error occured",
+        data: null,
+        res,
+      });
+    }
+
+    // other normal error
+    console.log(e);
+    return responseHandler<ShapeOfData>({
+      statusCode: 500,
+      success: false,
+      error: "Something wrong happened",
+      data: null,
+      res,
+    });
+  }
 };
 
 export const redirectUrlController = async (
