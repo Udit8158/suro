@@ -1,3 +1,4 @@
+import { cacheStats } from "../cache/cache";
 import type { CacheShape } from "../types/types";
 
 // This is will remove the least used cached url
@@ -16,5 +17,6 @@ export function removeLeastUsedCache(shortenUrlCache: Map<string, CacheShape>) {
     }
   });
 
+  cacheStats.evictions++; // for internal use
   shortenUrlCache.delete(leastUsedInSlug);
 }

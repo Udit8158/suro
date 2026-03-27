@@ -4,9 +4,10 @@ import type { CacheShape } from "../types/types";
 import request from "supertest";
 import { Prisma, prisma } from "@repo/db";
 import { app } from "../app";
-import { shortenUrlCache } from "../controllers/url.controller";
 import { BASE_URL, SLUG_CACHE_EXPIRES_IN } from "../utils/constant";
 import { expiredSlugCacheCleanUP } from "../utils/expiredSlugCacheCleanUp";
+import { shortenUrlCache } from "../cache/cache";
+import { clearRateLimitStore } from "../middleware/rate_limiter.middleware";
 
 // mock db seup
 vi.mock("@repo/db", async () => {
@@ -29,6 +30,8 @@ const mockedPrisma = vi.mocked(prisma, { deep: true });
 beforeEach(() => {
   vi.clearAllMocks();
   shortenUrlCache.clear();
+  clearRateLimitStore();
+  vi.useRealTimers();
 });
 
 // utility func for test
@@ -116,6 +119,16 @@ describe("/api/health", () => {
     expect(res.body).toBe("OKAY");
     expect(res.headers["content-type"]).toMatch(/json/);
   });
+
+  it("should not be rate limited", async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 20 }, () => request(app).get("/api/health")),
+    );
+
+    responses.forEach((res) => {
+      expect(res.statusCode).toBe(200);
+    });
+  });
 });
 
 describe("/api/unknown", () => {
@@ -191,6 +204,62 @@ describe("/api/url/shorten", () => {
     expect(res.statusCode).toBe(500);
     expect(res.body.success).toBe(false);
     expect(res.headers["content-type"]).toMatch(/json/);
+  });
+
+  it("should rate limit the 11th shorten request from the same ip within one second", async () => {
+    mockedPrisma.shortenUrl.create.mockResolvedValue({
+      id: "1",
+      slug: "abcde",
+      originalUrl: "https://example.com",
+    } as never);
+
+    const makeRequest = () =>
+      request(app)
+        .post("/api/url/shorten")
+        .set("X-Forwarded-For", "10.0.0.1")
+        .send({
+          originalUrl: "https://example.com",
+        });
+
+    const responses = await Promise.all(
+      Array.from({ length: 10 }, () => makeRequest()),
+    );
+    const limitedRes = await makeRequest();
+
+    responses.forEach((res) => {
+      expect([200, 201]).toContain(res.statusCode);
+    });
+    expect(limitedRes.statusCode).toBe(429);
+    expect(limitedRes.body.success).toBe(false);
+    expect(limitedRes.body.error).toBe("Too many requests");
+  });
+
+  it("should not share shorten limit across different ips", async () => {
+    mockedPrisma.shortenUrl.create.mockResolvedValue({
+      id: "1",
+      slug: "abcde",
+      originalUrl: "https://example.com",
+    } as never);
+
+    for (let i = 0; i < 10; i++) {
+      const res = await request(app)
+        .post("/api/url/shorten")
+        .set("X-Forwarded-For", "10.0.0.1")
+        .send({
+          originalUrl: "https://example.com",
+        });
+
+      expect([200, 201]).toContain(res.statusCode);
+    }
+
+    const differentIpRes = await request(app)
+      .post("/api/url/shorten")
+      .set("X-Forwarded-For", "10.0.0.2")
+      .send({
+        originalUrl: "https://example.com",
+      });
+
+    expect([200, 201]).toContain(differentIpRes.statusCode);
   });
 });
 
@@ -285,5 +354,99 @@ describe("/:slug", () => {
     expect(res.statusCode).toBe(500);
     expect(res.body.success).toBe(false);
     expect(res.headers["content-type"]).toMatch(/json/);
+  });
+
+  it("should rate limit the 51st redirect request from the same ip within one second", async () => {
+    shortenUrlCache.set("rate-limit-slug", {
+      originalUrl: "https://cached-example.com",
+      usedIn: 0,
+      expiresAt: Date.now() + SLUG_CACHE_EXPIRES_IN,
+    });
+
+    const makeRequest = () =>
+      request(app)
+        .get("/rate-limit-slug")
+        .set("X-Forwarded-For", "20.0.0.1")
+        .redirects(0);
+
+    const responses = await Promise.all(
+      Array.from({ length: 50 }, () => makeRequest()),
+    );
+    const limitedRes = await makeRequest();
+
+    responses.forEach((res) => {
+      expect(res.statusCode).toBe(302);
+    });
+    expect(limitedRes.statusCode).toBe(429);
+    expect(limitedRes.body.success).toBe(false);
+    expect(limitedRes.body.error).toBe("Too many requests");
+  });
+
+  it("should not share rate limits between shorten and redirect for the same ip", async () => {
+    mockedPrisma.shortenUrl.create.mockResolvedValue({
+      id: "1",
+      slug: "abcde",
+      originalUrl: "https://example.com",
+    } as never);
+    shortenUrlCache.set("shared-ip-slug", {
+      originalUrl: "https://cached-example.com",
+      usedIn: 0,
+      expiresAt: Date.now() + SLUG_CACHE_EXPIRES_IN,
+    });
+
+    for (let i = 0; i < 10; i++) {
+      const res = await request(app)
+        .post("/api/url/shorten")
+        .set("X-Forwarded-For", "30.0.0.1")
+        .send({
+          originalUrl: "https://example.com",
+        });
+
+      expect([200, 201]).toContain(res.statusCode);
+    }
+
+    const redirectRes = await request(app)
+      .get("/shared-ip-slug")
+      .set("X-Forwarded-For", "30.0.0.1")
+      .redirects(0);
+
+    expect(redirectRes.statusCode).toBe(302);
+    expect(redirectRes.headers.location).toBe("https://cached-example.com");
+  });
+
+  it("should allow the same ip again after the redirect window passes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-27T12:00:00.000Z"));
+
+    shortenUrlCache.set("window-reset-slug", {
+      originalUrl: "https://cached-example.com",
+      usedIn: 0,
+      expiresAt: Date.now() + SLUG_CACHE_EXPIRES_IN,
+    });
+
+    for (let i = 0; i < 50; i++) {
+      const res = await request(app)
+        .get("/window-reset-slug")
+        .set("X-Forwarded-For", "40.0.0.1")
+        .redirects(0);
+
+      expect(res.statusCode).toBe(302);
+    }
+
+    const limitedRes = await request(app)
+      .get("/window-reset-slug")
+      .set("X-Forwarded-For", "40.0.0.1")
+      .redirects(0);
+
+    expect(limitedRes.statusCode).toBe(429);
+
+    vi.setSystemTime(new Date("2026-03-27T12:00:01.001Z"));
+
+    const resetRes = await request(app)
+      .get("/window-reset-slug")
+      .set("X-Forwarded-For", "40.0.0.1")
+      .redirects(0);
+
+    expect(resetRes.statusCode).toBe(302);
   });
 });

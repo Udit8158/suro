@@ -1,3 +1,4 @@
+import { cacheStats } from "../cache/cache";
 import { CacheShape } from "../types/types";
 import { SLUG_CACHE_EXPIRES_IN } from "./constant";
 import { expiredSlugCacheCleanUP } from "./expiredSlugCacheCleanUp";
@@ -19,16 +20,20 @@ export function foundItemInCacheAndTryToUse(
     // check if the cache is expired already
     // we will not use the cache and delete the cache
     if (foundItemInCache.expiresAt <= Date.now()) {
+      cacheStats.expiredHits++; // internal cacheStats
+      cacheStats.misses++;
       shortenUrlCache.delete(slug);
       // then flow will go the found the slug in db
       return { cacheUsed: false, foundItemInCache };
     } else {
       // using the cache
       foundItemInCache.usedIn++; // using this cache
+      cacheStats.hits++;
       return { cacheUsed: true, foundItemInCache };
     }
   }
   // if not found cache
+  cacheStats.misses++;
   return { cacheUsed: false };
 }
 
@@ -37,6 +42,7 @@ export function writeSlugIntoCache(
   slug: string,
   originalUrl: string,
 ) {
+  cacheStats.writes++;
   // before storing the url in cache
   // cleanup the expired cache
   expiredSlugCacheCleanUP(shortenUrlCache);

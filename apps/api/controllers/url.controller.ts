@@ -3,18 +3,14 @@ import { Prisma, prisma } from "@repo/db";
 import * as z from "zod";
 import { BASE_URL } from "../utils/constant";
 import { responseHandler } from "../utils/responseHandler";
-import { CacheShape } from "../types/types";
 import {
   foundItemInCacheAndTryToUse,
   writeSlugIntoCache,
 } from "../utils/redirectController.helper";
 import { createShortenUrlWithRetries } from "../utils/shortenUrlController.helper";
+import { shortenUrlCache } from "../cache/cache";
+import { logger } from "../utils/logger";
 
-// in memory cache
-export let shortenUrlCache: Map<string, CacheShape> = new Map();
-// slug -> {originalUrl: "", usedIn: num, expiresIn: Date}
-
-// zod schema
 const ShortenURLInputSchema = z.object({
   originalUrl: z.url().refine((val) => val.startsWith("https://"), {
     message: "Must be a secure URL (https)",
@@ -27,6 +23,10 @@ type ShapeOfData = {
 };
 
 export const shortenUrlController = async (req: Request, res: Response) => {
+  // internal monirtoring variables
+  let dbUsed = false;
+  const startTime = Date.now();
+
   // zod validation first
   let validatedInputBody: z.infer<typeof ShortenURLInputSchema>;
 
@@ -35,6 +35,15 @@ export const shortenUrlController = async (req: Request, res: Response) => {
   } catch (e) {
     // zod validation error
     if (e instanceof z.ZodError) {
+      logger.info({
+        cacheUsed: false,
+        dbUsed,
+        event: "shortenUrlController.ZodValidation",
+        latencyInMs: Date.now() - startTime,
+        method: req.method,
+        path: req.originalUrl,
+        statusCode: 400,
+      });
       return responseHandler({
         statusCode: 400,
         success: false,
@@ -44,6 +53,18 @@ export const shortenUrlController = async (req: Request, res: Response) => {
         errorDetails: e.issues,
       });
     }
+    logger.error(
+      {
+        cacheUsed: false,
+        dbUsed,
+        event: "shortenUrlController.zodNonValidationErr",
+        latencyInMs: Date.now() - startTime,
+        method: req.method,
+        path: req.originalUrl,
+        statusCode: 500,
+      },
+      e,
+    );
     return responseHandler<ShapeOfData>({
       statusCode: 500,
       success: false,
@@ -54,11 +75,21 @@ export const shortenUrlController = async (req: Request, res: Response) => {
   }
 
   try {
+    dbUsed = true;
     const createShortenUrlResult = await createShortenUrlWithRetries(
       validatedInputBody.originalUrl,
     );
 
     if (createShortenUrlResult.kind === "retry_exhausted") {
+      logger.info({
+        cacheUsed: false,
+        dbUsed,
+        event: "shortenUrlController.slugCollision",
+        latencyInMs: Date.now() - startTime,
+        method: req.method,
+        path: req.originalUrl,
+        statusCode: 500,
+      });
       return responseHandler<ShapeOfData>({
         statusCode: 500,
         success: false,
@@ -71,7 +102,25 @@ export const shortenUrlController = async (req: Request, res: Response) => {
     const resData = {
       shortenUrl: `${BASE_URL}/${createShortenUrlResult.slug}`,
     };
-
+    // monirtoring
+    let event;
+    switch (createShortenUrlResult.kind) {
+      case "created":
+        event = "shortenUrlController.created";
+        break;
+      case "existing":
+        event = "shortenUrlController.existingUsed";
+        break;
+    }
+    logger.info({
+      cacheUsed: false,
+      dbUsed,
+      event,
+      latencyInMs: Date.now() - startTime,
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: 200,
+    });
     return responseHandler<ShapeOfData>({
       statusCode: createShortenUrlResult.kind === "created" ? 201 : 200,
       success: true,
@@ -82,7 +131,18 @@ export const shortenUrlController = async (req: Request, res: Response) => {
   } catch (e) {
     // prisma errors
     if (e instanceof Prisma.PrismaClientKnownRequestError) {
-      console.log(e);
+      logger.error(
+        {
+          cacheUsed: false,
+          dbUsed,
+          event: "shortenUrlController.PrismaError",
+          latencyInMs: Date.now() - startTime,
+          method: req.method,
+          path: req.originalUrl,
+          statusCode: 500,
+        },
+        e,
+      );
 
       return responseHandler<ShapeOfData>({
         statusCode: 500,
@@ -94,7 +154,18 @@ export const shortenUrlController = async (req: Request, res: Response) => {
     }
 
     // other normal error
-    console.log(e);
+    logger.error(
+      {
+        cacheUsed: false,
+        dbUsed,
+        event: "shortenUrlController.NonPrismaError",
+        latencyInMs: Date.now() - startTime,
+        method: req.method,
+        path: req.originalUrl,
+        statusCode: 500,
+      },
+      e,
+    );
     return responseHandler<ShapeOfData>({
       statusCode: 500,
       success: false,
@@ -110,6 +181,7 @@ export const redirectUrlController = async (
   res: Response,
 ) => {
   const startTime = Date.now();
+  let dbUsed = false; // for internal monirtoring
 
   try {
     const { slug } = req.params;
@@ -117,12 +189,20 @@ export const redirectUrlController = async (
     const cacheLookup = foundItemInCacheAndTryToUse(shortenUrlCache, slug);
     if (cacheLookup.cacheUsed) {
       res.setHeader("Location", cacheLookup.foundItemInCache.originalUrl);
-      console.log("Latency when using cache ", Date.now() - startTime);
-      res.redirect(cacheLookup.foundItemInCache.originalUrl);
+      res.status(302).redirect(cacheLookup.foundItemInCache.originalUrl);
+      logger.info({
+        event: "redirectController.CacheFound",
+        cacheUsed: true,
+        dbUsed,
+        latencyInMs: Date.now() - startTime,
+        path: req.originalUrl,
+        statusCode: 302,
+        method: req.method,
+      });
       return;
     }
 
-    console.log("trying for db");
+    dbUsed = true;
     const existingShortenUrl = await prisma.shortenUrl.findUnique({
       where: {
         slug,
@@ -131,6 +211,15 @@ export const redirectUrlController = async (
 
     // if not found in db -> 404 (that means no such slug in db, you have to shorten the url first )
     if (!existingShortenUrl) {
+      logger.info({
+        event: "redirectUrlController.DBUrlNotFound",
+        cacheUsed: false,
+        dbUsed,
+        latencyInMs: Date.now() - startTime,
+        path: req.originalUrl,
+        statusCode: 404,
+        method: req.method,
+      });
       return responseHandler<ShapeOfData>({
         statusCode: 404,
         success: false,
@@ -145,16 +234,34 @@ export const redirectUrlController = async (
     const originalUrl = existingShortenUrl.originalUrl;
     writeSlugIntoCache(shortenUrlCache, slug, originalUrl);
     res.setHeader("Location", originalUrl);
-    console.log("When using DB ", Date.now() - startTime);
-    res.redirect(originalUrl);
+    logger.info({
+      event: "redirectUrlController.FoundInDB",
+      cacheUsed: false,
+      dbUsed,
+      latencyInMs: Date.now() - startTime,
+      path: req.originalUrl,
+      statusCode: 302,
+      method: req.method,
+    });
+    res.status(302).redirect(originalUrl);
   } catch (error) {
     // if something wrong happened while db call and all
-    console.log(error);
+    logger.error(
+      {
+        event: "redirectUrlController.CatchError",
+        cacheUsed: false,
+        dbUsed,
+        latencyInMs: Date.now() - startTime,
+        path: req.originalUrl,
+        statusCode: 500,
+        method: req.method,
+      },
+      error,
+    );
     return responseHandler<ShapeOfData>({
       statusCode: 500,
       success: false,
       error: "Someting went wrong",
-      errorDetails: error,
       data: null,
       res,
     });
